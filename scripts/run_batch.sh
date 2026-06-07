@@ -60,36 +60,68 @@ echo ">> batch: ${#FILES[@]} claim file(s) from $CLAIMS_DIR" >&2
 SUMMARY="$OUT_DIR/_summary.tsv"
 : > "$SUMMARY"
 
-i=0
-for f in "${FILES[@]}"; do
-  i=$((i+1))
-  base="$(basename "$f")"
-  stem="${base%.*}"
-
-  # ID = leading token before first underscore/space; Title = the rest, _->space
+# derive ID + title for a claim file (echoes "id<TAB>title")
+id_title() {  # id_title <file>
+  local f="$1" base stem id rest title firstline
+  base="$(basename "$f")"; stem="${base%.*}"
   id="${stem%%[_ ]*}"
   rest="${stem#"$id"}"; rest="${rest#[_ ]}"
   title="$(printf '%s' "$rest" | tr '_' ' ')"
   [ -n "$title" ] || title="$stem"
-
-  # a "# Title: ..." first line in the file overrides the derived title
   firstline="$(head -n1 "$f")"
   case "$firstline" in
     "# Title:"*) title="${firstline#\# Title:}"; title="${title# }" ;;
   esac
+  printf '%s\t%s' "$id" "$title"
+}
 
-  run_out="$OUT_DIR/$stem"
-  mkdir -p "$run_out"
-  echo ">> [$i/${#FILES[@]}] $id — $title" >&2
+# How many claims to run AT ONCE. Each claim itself fans out to 5 models in
+# parallel, so MAX_PARALLEL claims = MAX_PARALLEL*5 concurrent OpenRouter calls
+# (~MAX_PARALLEL per model). Default 5 → ~25 concurrent, ~5/model — a safe burst.
+# or_query.sh backs off on 429/503, so an occasional overshoot self-heals.
+MAX_PARALLEL="${MAX_PARALLEL:-5}"
+echo ">> running up to $MAX_PARALLEL claim(s) in parallel (5 models each)" >&2
 
+# --- pass 1: launch all claims, gated to MAX_PARALLEL concurrent --------------
+# Portable job gate (works on macOS' bash 3.2, where `wait -n` is unavailable):
+# keep a list of running PIDs; when it's full, poll until at least one exits.
+running_pids=()
+gate() {  # block until fewer than MAX_PARALLEL jobs are alive
+  while [ "${#running_pids[@]}" -ge "$MAX_PARALLEL" ]; do
+    local alive=() p
+    for p in "${running_pids[@]}"; do
+      kill -0 "$p" 2>/dev/null && alive+=("$p")
+    done
+    # reassign without tripping `set -u` on an empty array (bash 3.2)
+    if [ "${#alive[@]}" -gt 0 ]; then running_pids=("${alive[@]}"); else running_pids=(); fi
+    [ "${#running_pids[@]}" -ge "$MAX_PARALLEL" ] && sleep 0.5
+  done
+}
+
+launched=0
+for f in "${FILES[@]}"; do
+  launched=$((launched+1))
+  stem="$(basename "$f")"; stem="${stem%.*}"
+  IFS=$'\t' read -r id title <<<"$(id_title "$f")"
+  run_out="$OUT_DIR/$stem"; mkdir -p "$run_out"
+  echo ">> [$launched/${#FILES[@]}] launch $id — $title" >&2
+
+  gate
   CLAIM_ID="$id" CLAIM_TITLE="$title" \
-    bash "$HERE/run_claim.sh" "$f" "$run_out" >"$run_out/console.log" 2>&1
+    bash "$HERE/run_claim.sh" "$f" "$run_out" >"$run_out/console.log" 2>&1 &
+  running_pids+=("$!")
+done
+wait   # let the final batch finish
 
+# --- pass 2: assemble the report in sorted (stable) order ---------------------
+for f in "${FILES[@]}"; do
+  stem="$(basename "$f")"; stem="${stem%.*}"
+  IFS=$'\t' read -r id title <<<"$(id_title "$f")"
+  run_out="$OUT_DIR/$stem"
   frag="$run_out/claim-report.md"
   if [ -f "$frag" ]; then
     printf '\n\n---\n\n' >> "$REPORT"
     cat "$frag" >> "$REPORT"
-    # pull the "N/M confirm" headline for the summary table
     headline="$(grep -m1 'models confirm' "$frag" | tr -d '_*' | sed 's/^[[:space:]]*//')"
     printf '%s\t%s\t%s\n' "$id" "$title" "${headline:-(no headline)}" >> "$SUMMARY"
   else

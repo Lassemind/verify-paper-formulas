@@ -46,13 +46,20 @@ BODY="$(jq -n --arg model "$MODEL" --rawfile prompt "$PROMPT_FILE" --argjson max
   '{model:$model, messages:[{role:"user", content:$prompt}], max_tokens:$maxtok, temperature:0.2}')"
 
 # One call → parsed JSON line on stdout. Returns nonzero only on transport failure.
+# The HTTP status code is captured separately (curl -w) and exposed via the global
+# HTTP_CODE so the caller can back off on 429 (rate limit) / 5xx without parsing it
+# out of the body.
+HTTP_CODE=000
 do_call() {
-  local resp
-  resp="$(curl -sS --max-time 240 \
+  local raw resp
+  # append the status code on its own trailing line, then split it off
+  raw="$(curl -sS --max-time 240 -w '\n%{http_code}' \
     https://openrouter.ai/api/v1/chat/completions \
     -H "Authorization: Bearer $KEY" \
     -H "Content-Type: application/json" \
-    -d "$BODY" 2>&1)" || { echo ""; return 1; }
+    -d "$BODY" 2>&1)" || { HTTP_CODE=000; echo ""; return 1; }
+  HTTP_CODE="${raw##*$'\n'}"          # last line = status code
+  resp="${raw%$'\n'*}"               # everything before it = body
   echo "$resp" | jq -c --arg model "$MODEL" '
     if .choices and (.choices | length) > 0 then
       {ok:true, requested:$model, model:(.model // $model),
@@ -63,13 +70,30 @@ do_call() {
     end' 2>/dev/null || echo "{\"ok\":false,\"requested\":\"$MODEL\",\"error\":\"could not parse response\"}"
 }
 
-OUT="$(do_call)"
+# Call with backoff on rate-limit / transient server errors. OpenRouter (and the
+# upstream providers) cap *concurrent* requests per model; when run_batch.sh fans
+# many claims out at once, a few calls can bounce with 429/503. Two short backoffs
+# recover them instead of losing the claim to "no result".
+call_with_backoff() {
+  local out delay
+  for delay in 0 2 5; do
+    [ "$delay" -gt 0 ] && sleep "$delay"
+    out="$(do_call)"
+    case "$HTTP_CODE" in
+      429|500|502|503|504) continue ;;   # transient → back off and retry
+      *) printf '%s' "$out"; return 0 ;;  # success or a real error → done
+    esac
+  done
+  printf '%s' "$out"   # exhausted retries: return the last (rate-limited) result
+}
+
+OUT="$(call_with_backoff)"
 # Auto-retry once if the model returned an empty body (some reasoning models burn
 # their budget before emitting text). A single retry recovers most of these.
 CONTENT_LEN="$(printf '%s' "$OUT" | jq -r '(.content // "") | length' 2>/dev/null || echo 0)"
 OK_FLAG="$(printf '%s' "$OUT" | jq -r '.ok // false' 2>/dev/null || echo false)"
 if [ "$OK_FLAG" = "true" ] && [ "${CONTENT_LEN:-0}" -eq 0 ]; then
-  OUT="$(do_call)"
+  OUT="$(call_with_backoff)"
 fi
 
 if [ -z "$OUT" ]; then
