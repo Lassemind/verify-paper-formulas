@@ -8,6 +8,12 @@ Be explicit about:
 - units / dimensional consistency
 - limiting cases or sanity checks where cheap
 
+Write ALL mathematics as LaTeX: inline maths in `$ ... $` and any standalone
+equation in `$$ ... $$` (or a `\[ ... \]` block). Use proper symbols
+(`\mu_0`, `\pi`, `R_c`, subscripts/superscripts, `\frac{}{}`, `\sqrt{}`),
+not ASCII like `mu0` or `R_c^2`. The one exception is the final VERDICT line,
+which must stay plain text (see below).
+
 CLAIM TO DERIVE (from the paper):
 ---
 {{CLAIM}}
@@ -21,7 +27,8 @@ CONTEXT (surrounding definitions / symbols from the paper):
 Keep your derivation concise — at most ~450 words. It is more important to REACH
 the verdict than to show every line. You MUST finish with the verdict line below;
 do not run out of space before it. Write the verdict on its own line, starting
-with the literal token "VERDICT:" (no markdown bold, no surrounding brackets):
+with the literal token "VERDICT:" (no markdown bold, no surrounding brackets,
+no LaTeX/`$` in this line — plain text only):
 
 VERDICT: CONFIRMED|DISCREPANCY|UNSURE — <one-sentence reason>
 

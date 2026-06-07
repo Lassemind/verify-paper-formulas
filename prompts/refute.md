@@ -5,6 +5,11 @@ unjustified, an approximation is uncontrolled, or a factor/sign/unit is off, say
 You are given the paper's own derivation AND independent derivations produced by
 other models. Use them, but trust none of them blindly — check the math yourself.
 
+Write ALL mathematics as LaTeX: inline maths in `$ ... $` and standalone
+equations in `$$ ... $$` (or `\[ ... \]`), with proper symbols
+(`\mu_0`, `\pi`, `\frac{}{}`, subscripts), not ASCII. The only exception is the
+final VERDICT line, which must stay plain text (see below).
+
 PAPER'S DERIVATION:
 ---
 {{CLAIM}}
@@ -26,7 +31,8 @@ breaks, if any. If you cannot find a real error after genuine effort, say it hol
 Keep it concise — at most ~450 words. It is more important to REACH the verdict
 than to exhaust every avenue. You MUST finish with the verdict line below; do not
 run out of space before it. Write the verdict on its own line, starting with the
-literal token "VERDICT:" (no markdown bold, no surrounding brackets):
+literal token "VERDICT:" (no markdown bold, no surrounding brackets,
+no LaTeX/`$` in this line — plain text only):
 
 VERDICT: CONFIRMED|REFUTED|UNSURE — <one-sentence reason>
 
