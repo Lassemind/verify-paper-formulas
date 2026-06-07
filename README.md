@@ -1,25 +1,28 @@
 # verify-paper-formulas
 
-A [Claude Code](https://claude.com/claude-code) **skill** that independently
-checks the formulas, derivations, and approximations in a physics paper. Several
-different large language models re-derive each quantity *from scratch* (via
-[OpenRouter](https://openrouter.ai)), then **adversarially try to refute** each
-other; disagreements get a focused third round, and numeric claims are verified
-by **actually running Python**, not by trusting a model's mental arithmetic. The
-result is a Markdown review report with a per-formula verdict. **The paper itself
-is never modified.**
+**Catch mistakes in a physics paper's formulas before a reviewer does.**
+
+This is a [Claude Code](https://claude.com/claude-code) **skill** that double-checks
+the formulas and derivations in a paper. It hands each formula to **five different
+AI models** (via [OpenRouter](https://openrouter.ai)) and makes them work it out
+*from scratch*, then **argue against each other** to surface any error. Formulas
+with numbers in them are checked with a **real calculator** (Python), not the AI's
+own arithmetic. Out comes a clear review report — pass, problem, or split — for
+each formula. **Your paper is only read, never edited.**
+
+👉 New here? Jump to **[The idea, in plain words](#the-idea-in-plain-words)**.
 
 > Built by **Lasse Parduhn** for **Prof. Dieter Süß** (University of Vienna) to
 > cross-check the derivations in the `energy_harvesting` paper — independently
 > re-deriving each quantity and letting different models check one another.
 
----
+***
 
 ## Quickstart
 
 ### 1. Install
 
-```bash
+```Shell
 git clone https://github.com/Lassemind/verify-paper-formulas.git \
   ~/.claude/skills/verify-paper-formulas
 ```
@@ -29,7 +32,7 @@ Code session, from any folder.
 
 ### 2. Add your OpenRouter key
 
-```bash
+```Shell
 cp ~/.claude/skills/verify-paper-formulas/.env.example \
    ~/.claude/skills/verify-paper-formulas/.env
 # then edit .env and paste your key
@@ -42,14 +45,14 @@ The `.env` is git-ignored and the key is **never** written to any report or log.
 
 **In Claude Code** — just ask, and the skill activates automatically:
 
-> "Verify the formulas in Appendix B of the energy_harvesting paper — let several
+> "Verify the formulas in Appendix B of the energy\_harvesting paper — let several
 > LLMs derive them independently and check each other."
 
 …or invoke it explicitly with `/verify-paper-formulas`.
 
 **From the shell** — run one claim, or a whole folder of them:
 
-```bash
+```Shell
 SKILL=~/.claude/skills/verify-paper-formulas
 
 # one claim:
@@ -63,7 +66,7 @@ CLAIM_ID=B1 CLAIM_TITLE="Ideal solenoid L" \
 For high-confidence runs (3× self-consistency sampling, auto Round 3, Python
 ground-truth on numeric claims):
 
-```bash
+```Shell
 N_SAMPLES=3 "$SKILL/scripts/run_batch.sh" ./claims
 ```
 
@@ -71,103 +74,111 @@ N_SAMPLES=3 "$SKILL/scripts/run_batch.sh" ./claims
 
 Claude Code · `git` · `curl` · `jq` · `python3` · an OpenRouter API key.
 
----
+***
+
+## The idea, in plain words
+
+Imagine handing one formula from the paper to a **panel of five expert
+reviewers** — who don't trust the paper, and don't trust each other:
+
+1. **Each reviewer works it out alone first**, without seeing the paper's answer
+   or anyone else's. (So nobody just nods along.)
+2. **Then they're shown the paper's version and told: "find the mistake."** A
+   formula only earns a pass if it survives five people *actively attacking* it.
+3. **If they disagree**, that one disputed step gets its own short debate.
+4. **If the formula has real numbers in it**, a calculator checks them — actual
+   Python, not a model doing mental math (which is where they slip).
+
+At the end you get a tidy report: who confirmed, who objected and why, and the
+calculator's verdict. **You** make the final call. The paper is only ever *read*,
+never changed.
+
+***
 
 ## How it works (in depth)
 
 ### The claim file
 
-Each formula to check is a small text file with two sections — plus an optional
-third for numeric checks:
+Each formula you want checked is a small text file with two sections — plus an
+optional third when you also want the numbers checked:
 
-```
+```text
 === CLAIM ===
 L_s = \mu_0 n^2 \pi R_c^2 / h
 === CONTEXT ===
 Ideal solenoid, n turns, radius R_c, height h. \mu_0 is the vacuum permeability.
-=== NUMBERS ===                      # optional — triggers numeric verification
+=== NUMBERS ===                      # optional — turns on numeric verification
 R_c = 14.1e-6 m, h = 1.0e-3 m, n = 20.
 Paper reference: L_s = 2.41e-9 H (tolerance ~5%).
 ```
+
+* **CLAIM** — the formula or derivation to test.
+* **CONTEXT** — what the symbols mean, so reviewers don't have to guess.
+* **NUMBERS** *(optional)* — plug-in values + the paper's answer. Including this
+  section is what switches on the Python calculator check.
 
 In a batch, the **filename** sets the ID and title: `B1_ideal_solenoid.txt`
 → ID `B1`, title *"ideal solenoid"* (a `# Title: …` first line overrides).
 
 ### The verification pipeline
 
-```
-                       ┌──────────────────────────────────────────────┐
-                       │              one claim file                   │
-                       │   === CLAIM === / CONTEXT / (NUMBERS?)        │
-                       └───────────────────────┬──────────────────────┘
-                                               │
-                 ┌─────────────────────────────▼─────────────────────────────┐
-                 │  ROUND 1 — independent derivation   (prompts/derive.md)    │
-                 │  all 5 models derive the quantity SOLO, blind to the       │
-                 │  paper's result and to each other.                         │
-                 │  N_SAMPLES>1 → each model runs N× (temp 0.5); per-model     │
-                 │  verdict = MAJORITY of its N runs (tie → UNSURE).           │
-                 └─────────────────────────────┬─────────────────────────────┘
-                                               │ derivations digested
-                 ┌─────────────────────────────▼─────────────────────────────┐
-                 │  ROUND 2 — adversarial refutation   (prompts/refute.md)    │
-                 │  each model gets the paper's derivation + the others' and  │
-                 │  actively tries to find the FIRST step that breaks.        │
-                 └─────────────────────────────┬─────────────────────────────┘
-                                               │
-                          unanimous? ──── yes ─┤
-                                │              │
-                                no             │
-                                ▼              │
-                 ┌──────────────────────────┐  │
-                 │ ROUND 3 — resolve split  │  │   (only if ≥1 confirm AND
-                 │ (prompts/resolve.md)     │  │    ≥1 dissent in Round 2)
-                 │ models re-decide ONLY    │  │
-                 │ the contested step.      │  │
-                 └─────────────┬────────────┘  │
-                               └───────┬────────┘
-                                       │
-              NUMBERS present? ────────┤
-                       │               │
-                       ▼               │
-        ┌────────────────────────────┐ │   one model writes a Python snippet;
-        │ PYTHON GROUND-TRUTH        │ │   run_python.sh executes it sandboxed
-        │ (prompts/numeric.md +      │ │   (only `import math`, 10 s timeout);
-        │  scripts/run_python.sh)    │ │   the computed number is compared to
-        │ Python computes the value, │ │   the paper's reference (relative error).
-        │ not the LLM.               │ │
-        └─────────────┬──────────────┘ │
-                      └────────┬────────┘
-                               ▼
-                 ┌─────────────────────────────────────────────┐
-                 │  claim-report.md  (deterministic)            │
-                 │  • "N/M models confirm" headline             │
-                 │  • per-round verdict tables                  │
-                 │  • Python ground-truth row (if numeric)      │
-                 │  • a synthesis line for the human to fill in │
-                 └─────────────────────────────────────────────┘
+The diagram below renders automatically on GitHub. Each box is one stage; the
+diamonds are the two decision points (agree? / has numbers?).
+
+```mermaid
+flowchart TD
+    A["📄 One claim file<br/>CLAIM · CONTEXT · NUMBERS?"] --> R1
+
+    R1["<b>Round 1 — derive alone</b><br/>All 5 models work out the formula<br/>blind: no paper answer, no peeking.<br/><i>N_SAMPLES&gt;1 → each runs N×, takes its own majority</i>"]
+    R1 --> R2["<b>Round 2 — try to break it</b><br/>Each model now sees the paper's<br/>derivation + everyone else's, and<br/>hunts for the first step that fails."]
+
+    R2 --> Q{"Do they<br/>all agree?"}
+    Q -- "Yes (unanimous)" --> NUM
+    Q -- "No — some confirm,<br/>some object" --> R3["<b>Round 3 — settle the split</b><br/>Models re-argue ONLY the one<br/>contested step, not the whole thing."]
+    R3 --> NUM
+
+    NUM{"Any actual<br/>NUMBERS?"}
+    NUM -- "Yes" --> PY["🐍 <b>Python ground-truth</b><br/>One model writes a Python snippet;<br/>it runs sandboxed (only <code>math</code>, 10 s)<br/>and the computed value is compared<br/>to the paper's number."]
+    NUM -- "No" --> REP
+    PY --> REP
+
+    REP["📝 <b>claim-report.md</b><br/>• “N/M models confirm” headline<br/>• per-round verdict tables<br/>• Python row (if numeric)<br/>• a synthesis line you fill in"]
+
+    style A fill:#e8f0fe,stroke:#4285f4
+    style R1 fill:#ffffff,stroke:#888888
+    style R2 fill:#ffffff,stroke:#888888
+    style R3 fill:#fef7e0,stroke:#f9ab00
+    style PY fill:#e6f4ea,stroke:#34a853
+    style REP fill:#f3e8fd,stroke:#a142f4
+    style Q fill:#ffffff,stroke:#444444
+    style NUM fill:#ffffff,stroke:#444444
 ```
 
-`run_batch.sh` runs many claims (up to `MAX_PARALLEL` at once, 5 models each),
-then concatenates every `claim-report.md` into **one** report with a summary
-table at the top. A claim that errors is marked `FAILED` and never aborts the batch.
+**The words each reviewer ends on:** **CONFIRMED** (it holds), **REFUTED** or
+**DISCREPANCY** (something's wrong), **UNSURE** / **NO-VERDICT** (couldn't decide
+— treated as a missing opinion, not as an objection). Round 3 only fires when the
+panel is genuinely split: at least one CONFIRMED *and* at least one objection.
+
+`run_batch.sh` runs many claims at once (up to `MAX_PARALLEL`, 5 models each),
+then stitches every `claim-report.md` into **one** report with a summary table on
+top. A claim that errors out is marked `FAILED` and never aborts the rest.
 
 ### Why three rounds + Python?
 
-- **Round 1 (blind, independent)** establishes what the answer *should* be without
+* **Round 1 (blind, independent)** establishes what the answer *should* be without
   anchoring on the paper.
-- **Round 2 (adversarial)** is the real test: every model is told to *break* the
+* **Round 2 (adversarial)** is the real test: every model is told to *break* the
   derivation, so a formula that survives has been attacked from five directions.
-- **Round 3** only fires on genuine disagreement and forces the models to argue
+* **Round 3** only fires on genuine disagreement and forces the models to argue
   the single contested step rather than talk past each other.
-- **Self-consistency** (`N_SAMPLES`) averages out a model's one-off slips.
-- **Python ground-truth** removes the weakest link in LLM verification — numeric
+* **Self-consistency** (`N_SAMPLES`) averages out a model's one-off slips.
+* **Python ground-truth** removes the weakest link in LLM verification — numeric
   arithmetic — by computing the number for real.
 
 The final verdict (✅ confirmed / ⚠️ disagreement / ❌ error) is the human's call,
 informed by these tables — not a blind majority vote.
 
----
+***
 
 ## Layout
 
@@ -191,7 +202,7 @@ verify-paper-formulas/
 Default model panel (real cross-vendor diversity):
 `claude-opus-4.8`, `gpt-5.5`, `gemini-3.1-pro`, `grok-4.3`, `deepseek-v4-pro`.
 
----
+***
 
 ## Configuration
 
@@ -208,25 +219,25 @@ The scripts read `OPENROUTER_API_KEY` from the first source that has it:
 
 All optional — defaults keep it fast and cheap.
 
-| Var | Default | Effect |
-|-----|---------|--------|
-| `N_SAMPLES` | `1` | Self-consistency: derive each quantity N× in Round 1 (temp 0.5); per-model verdict = majority. `3` is a good high-confidence value. |
-| `MAX_PARALLEL` | `5` | `run_batch.sh`: claims run at once (× 5 models = concurrent calls). |
-| `OR_DIGEST_CHARS` | `4000` | Max chars of each Round-1 derivation carried into Round 2. |
-| `OR_MAX_TOKENS` | `8192` | Per-call completion cap. |
-| `OR_TEMP` | `0.2` | Sampling temperature (auto-raised to 0.5 during `N_SAMPLES` runs). |
-| `GROUND_TRUTH_MODEL` | `claude-opus-4.8` | Model that writes the numeric-check Python snippet. |
+| Var                  | Default           | Effect                                                                                                                              |
+| -------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `N_SAMPLES`          | `1`               | Self-consistency: derive each quantity N× in Round 1 (temp 0.5); per-model verdict = majority. `3` is a good high-confidence value. |
+| `MAX_PARALLEL`       | `5`               | `run_batch.sh`: claims run at once (× 5 models = concurrent calls).                                                                 |
+| `OR_DIGEST_CHARS`    | `4000`            | Max chars of each Round-1 derivation carried into Round 2.                                                                          |
+| `OR_MAX_TOKENS`      | `8192`            | Per-call completion cap.                                                                                                            |
+| `OR_TEMP`            | `0.2`             | Sampling temperature (auto-raised to 0.5 during `N_SAMPLES` runs).                                                                  |
+| `GROUND_TRUTH_MODEL` | `claude-opus-4.8` | Model that writes the numeric-check Python snippet.                                                                                 |
 
 > **Cost note:** `MAX_PARALLEL` and `N_SAMPLES` multiply. `MAX_PARALLEL=5
 > N_SAMPLES=3` ≈ 75 concurrent calls. If you push both, drop `MAX_PARALLEL` to 2.
 
----
+***
 
 ## Safety
 
-- The paper is read-only — never modified.
-- The API key is never written to any report, log, or file; `.env` is git-ignored.
-- `run_python.sh` executes model-written code in a locked-down sandbox: a token
+* The paper is read-only — never modified.
+* The API key is never written to any report, log, or file; `.env` is git-ignored.
+* `run_python.sh` executes model-written code in a locked-down sandbox: a token
   blocklist allows only `import math`/`cmath` (no `os`/`sys`/`subprocess`/`open`/
   `eval`/`exec`/`__import__`/network), `python3 -I -S`, a 10 s timeout, and a
   throwaway working directory. Anything suspicious is refused rather than run.
