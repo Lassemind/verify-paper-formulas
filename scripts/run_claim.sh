@@ -130,8 +130,25 @@ count_verdict() {  # count_verdict <jsonl-file> <word>
   printf '%s' "$n"
 }
 
+# extract the first ```python ... ``` fenced block from a model answer
+extract_python() {  # extract_python <text-file>
+  awk '/^[[:space:]]*```[[:space:]]*python/{f=1;next} /^[[:space:]]*```/{if(f)exit} f' "$1"
+}
+
+# pull the first number that looks like a reference value out of the NUMBERS text
+# (scientific or decimal). Heuristic: the number following "reference" if present,
+# else the last standalone number in the block.
+reference_value() {  # reference_value <numbers-file>
+  local ref
+  ref="$(grep -iEo 'reference[^0-9eE+-]*([+-]?[0-9]*\.?[0-9]+([eE][+-]?[0-9]+)?)' "$1" \
+         | grep -Eo '[+-]?[0-9]*\.?[0-9]+([eE][+-]?[0-9]+)?' | tail -1)"
+  [ -z "$ref" ] && ref="$(grep -Eo '[+-]?[0-9]*\.?[0-9]+([eE][+-]?[0-9]+)?' "$1" | tail -1)"
+  printf '%s' "$ref"
+}
+
 printf '%s\n' "$CLAIM_TXT"    > "$OUT_DIR/_claim.txt"
 printf '%s\n' "$CONTEXT_TXT"  > "$OUT_DIR/_context.txt"
+[ -n "$NUMBERS_TXT" ] && printf '%s\n' "$NUMBERS_TXT" > "$OUT_DIR/_numbers.txt"
 
 # --- Round 1: independent derivation ---------------------------------------
 fill "$SKILL_ROOT/prompts/derive.md" CLAIM   "$OUT_DIR/_claim.txt"   "$OUT_DIR/_r1.tmp"
@@ -140,8 +157,13 @@ echo ">> Round 1 (independent derivation) ..." >&2
 bash "$HERE/fan_out.sh" "$OUT_DIR/_r1.prompt" > "$OUT_DIR/round1.jsonl"
 
 # --- digest of Round-1 derivations -----------------------------------------
-jq -r 'select(.requested) |
-  "[\(.requested|sub("/.*";""))]: \((.content // "(no output)") | gsub("\n";" ") | .[0:700])"' \
+# Each derivation is kept up to OR_DIGEST_CHARS (default 4000) chars. The old
+# 700-char cap silently truncated long derivations (Gemini especially), so
+# Round 2 refuted only half the argument. 4000 keeps the full reasoning while
+# bounding the Round-2 prompt size.
+DIGEST_CHARS="${OR_DIGEST_CHARS:-4000}"
+jq -r --argjson n "$DIGEST_CHARS" 'select(.requested) |
+  "[\(.requested|sub("/.*";""))]: \((.content // "(no output)") | gsub("\n";" ") | .[0:$n])"' \
   "$OUT_DIR/round1.jsonl" > "$OUT_DIR/_others.txt"
 
 # --- Round 2: adversarial refutation ---------------------------------------
@@ -177,6 +199,48 @@ printf '\n### Round 1 — independent derivation\n' >> "$REPORT"
 verdict_table_md "$OUT_DIR/round1.jsonl"
 printf '\n### Round 2 — adversarial refutation\n' >> "$REPORT"
 verdict_table_md "$OUT_DIR/round2.jsonl"
+
+# --- Python ground-truth (numeric mode only) -------------------------------
+# One model writes a Python snippet; PYTHON (not the LLM) computes the number,
+# which is compared against the paper's reference value. Real verification of the
+# arithmetic, instead of trusting the models' own mental math.
+if [ -n "$NUMBERS_TXT" ]; then
+  echo ">> Python ground-truth: requesting snippet ..." >&2
+  GT_MODEL="${GROUND_TRUTH_MODEL:-anthropic/claude-opus-4.8}"
+  fill "$SKILL_ROOT/prompts/numeric.md" CLAIM   "$OUT_DIR/_claim.txt"   "$OUT_DIR/_num1.tmp"
+  fill "$OUT_DIR/_num1.tmp"             CONTEXT "$OUT_DIR/_context.txt" "$OUT_DIR/_num2.tmp"
+  fill "$OUT_DIR/_num2.tmp"             NUMBERS "$OUT_DIR/_numbers.txt" "$OUT_DIR/_num.prompt"
+
+  bash "$HERE/or_query.sh" "$GT_MODEL" "$OUT_DIR/_num.prompt" > "$OUT_DIR/_num.json" 2>/dev/null
+  jq -r '.content // ""' "$OUT_DIR/_num.json" > "$OUT_DIR/_num.answer"
+  extract_python "$OUT_DIR/_num.answer" > "$OUT_DIR/snippet.py"
+
+  printf '\n### Python ground-truth\n\n' >> "$REPORT"
+  if [ ! -s "$OUT_DIR/snippet.py" ]; then
+    printf '> No Python snippet could be extracted from the model answer.\n' >> "$REPORT"
+  else
+    RUN_JSON="$(bash "$HERE/run_python.sh" "$OUT_DIR/snippet.py")"
+    if [ "$(printf '%s' "$RUN_JSON" | jq -r '.ok')" = "true" ]; then
+      COMPUTED="$(printf '%s' "$RUN_JSON" | jq -r '.stdout' | tr -d '[:space:]' | tail -c 40)"
+      REF="$(reference_value "$OUT_DIR/_numbers.txt")"
+      REL="$(python3 -I -S -c "
+try:
+    c=float('$COMPUTED'); r=float('$REF')
+    print(f'{abs(c-r)/abs(r)*100:.2f}' if r else 'n/a')
+except Exception:
+    print('n/a')" 2>/dev/null)"
+      printf '| Computed (Python) | Paper reference | Rel. error |\n|---|---|---|\n' >> "$REPORT"
+      printf '| `%s` | `%s` | %s%% |\n\n' "$COMPUTED" "${REF:-?}" "${REL:-n/a}" >> "$REPORT"
+      printf '<details><summary>snippet</summary>\n\n```python\n' >> "$REPORT"
+      cat "$OUT_DIR/snippet.py" >> "$REPORT"
+      printf '\n```\n</details>\n' >> "$REPORT"
+    else
+      printf '> Snippet not executed: %s (%s)\n' \
+        "$(printf '%s' "$RUN_JSON" | jq -r '.reason // "?"')" \
+        "$(printf '%s' "$RUN_JSON" | jq -r '.error // ""' | tr -d '\n' | cut -c1-160)" >> "$REPORT"
+    fi
+  fi
+fi
 
 {
   printf '\n> _Synthesis (fill in): overall verdict + confidence; if any model dissents, '
