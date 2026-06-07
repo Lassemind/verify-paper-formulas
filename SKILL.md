@@ -1,8 +1,7 @@
-***
-
+---
 name: verify-paper-formulas
-description: Use when independently verifying the formulas, derivations, and approximations in a physics paper (such as the energy\_harvesting Overleaf project) by having multiple LLMs derive each quantity via OpenRouter and adversarially refute each other.
------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+description: Use when independently verifying the formulas, derivations, and approximations in a physics paper (such as the energy_harvesting Overleaf project) by having multiple LLMs derive each quantity via OpenRouter and adversarially refute each other.
+---
 
 # Verify Paper Formulas
 
@@ -45,21 +44,39 @@ and the surrounding definitions/symbols (the **context**).
 
 ### Phase B — Multi-model verification (per claim)
 
-**Round 1 — independent derivation.** Fill `prompts/derive.md` (`{{CLAIM}}`,
-`{{CONTEXT}}`) into a temp file, then:
+**Preferred: one driver per claim.** Write the claim to a plain-text file with
+two (optionally three) `=== … ===` sections and run `run_claim.sh`:
 
 ```
-scripts/fan_out.sh <derive-prompt-file>
+=== CLAIM ===
+<the paper's formula / derivation>
+=== CONTEXT ===
+<surrounding definitions and symbols>
+=== NUMBERS ===          # optional — turns it into a NUMERIC check
+<symbol values + the paper's reference result and tolerance>
 ```
 
-Every model derives the quantity solo, blind to the paper's result and to each
-other. Output is JSONL (one line per model).
+```
+CLAIM_ID=B1 CLAIM_TITLE="Ideal solenoid L" \
+  scripts/run_claim.sh <claim-file> <out-dir>
+```
 
-**Round 2 — adversarial refutation.** Fill `prompts/refute.md` (`{{CLAIM}}`,
-`{{CONTEXT}}`, `{{OTHER_DERIVATIONS}}` = the Round-1 contents), then run
-`fan_out.sh` again. Each model is told to actively refute the paper's derivation.
+This runs Round 1 (independent derivation) → digest → Round 2 (adversarial
+refutation), prints a verdict tally, and writes three files to `<out-dir>`:
+`round1.jsonl`, `round2.jsonl`, and a deterministic **`claim-report.md`**
+fragment (claim text + per-model verdict tables + an "N/M confirm" headline).
+The driver avoids the shell word-splitting trap of looping over the model list
+by hand. A failed model shows up as `(no result)` and never aborts the others.
 
-Each model ends with a line `VERDICT: <...> — <reason>`; parse it with jq:
+If a `=== NUMBERS ===` section is present, the models are instructed to plug the
+values in, compute the result, and compare against the paper's reference within
+the stated tolerance — this is how "more test cases" / numeric verification is done.
+
+**Low-level fallback.** To drive the rounds by hand, fill `prompts/derive.md`
+(`{{CLAIM}}`, `{{CONTEXT}}`) and run `scripts/fan_out.sh <prompt-file>`; then fill
+`prompts/refute.md` (`{{CLAIM}}`, `{{CONTEXT}}`, `{{OTHER_DERIVATIONS}}` = the
+Round-1 contents) and run `fan_out.sh` again. Each model ends with a line
+`VERDICT: <...> — <reason>`; parse with:
 
 ```
 ... | jq -r 'select(.requested) | "\(.requested): \(.content)"'
@@ -73,13 +90,17 @@ dissenting model found a *real* error or just made a mistake itself.
 
 ## Report Format
 
-Write to `<dir>/verify-reports/YYYY-MM-DD-<paper>.md` (do not commit it). Per claim:
+`run_claim.sh` already emits a deterministic `claim-report.md` per claim (verdict
+tables + an "N/M confirm" headline). Assemble the per-claim fragments into
+`<dir>/verify-reports/YYYY-MM-DD-<paper>.md` (do not commit it) and add, per claim,
+the one thing the script can't decide for you — the **synthesis line**:
 
-* **Claim** — formula/quantity + source location
-* **Solo derivations** — one short line per model
-* **Adversarial round** — who refuted what
+* **Claim** — formula/quantity + source location *(from the fragment)*
+* **Solo / adversarial verdicts** — per-model tables *(from the fragment)*
 * **Verdict** — ✅ confirmed / ⚠️ disagreement / ❌ error found, + confidence
+  *(your call — not a blind majority; weigh whether a dissenter found a* real *error)*
 * **Discrepancy note** — if any, the exact step/factor/sign that differs
+* For numeric claims: the computed value, the reference, and the relative error
 
 ## Error Handling
 
@@ -91,8 +112,12 @@ Write to `<dir>/verify-reports/YYYY-MM-DD-<paper>.md` (do not commit it). Per cl
 
 ## Scripts
 
+* `scripts/run_claim.sh <claim-file> [out-dir]` — **the driver**: both rounds for
+  one claim + a `claim-report.md`. Honours `CLAIM_ID` / `CLAIM_TITLE` env vars for
+  the heading and an optional `=== NUMBERS ===` section for numeric checks.
 * `scripts/or_query.sh <model> <prompt-file>` — one OpenRouter call → JSON
-  `{ok, requested, model, content|error}`.
+  `{ok, requested, model, content|error}`. `OR_MAX_TOKENS` overrides the 8192 cap;
+  retries once on empty content.
 * `scripts/fan_out.sh <prompt-file> [models...]` — runs all models in parallel,
   emits JSONL. Defaults to the 5-model set; pass model IDs to override.
 
