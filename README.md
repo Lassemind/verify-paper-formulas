@@ -7,8 +7,9 @@ the formulas and derivations in a paper. It hands each formula to **five differe
 AI models** (via [OpenRouter](https://openrouter.ai)) and makes them work it out
 *from scratch*, then **argue against each other** to surface any error. Formulas
 with numbers in them are checked with a **real calculator** (Python), not the AI's
-own arithmetic. Out comes a clear review report — pass, problem, or split — for
-each formula. **Your paper is only read, never edited.**
+own arithmetic. Out comes a **plain-language review** — written for a human, in
+paper order, telling you exactly which formula is wrong and why — backed by the
+full per-formula verdict tables. **Your paper is only read, never edited.**
 
 👉 New here? Jump to **[The idea, in plain words](#the-idea-in-plain-words)**.
 
@@ -59,7 +60,7 @@ SKILL=~/.claude/skills/verify-paper-formulas
 CLAIM_ID=B1 CLAIM_TITLE="Ideal solenoid L" \
   "$SKILL/scripts/run_claim.sh" my_claim.txt ./out
 
-# a directory of claims → one assembled report:
+# a directory of claims → raw report + a human-readable review:
 "$SKILL/scripts/run_batch.sh" ./claims
 ```
 
@@ -89,9 +90,15 @@ reviewers** — who don't trust the paper, and don't trust each other:
 4. **If the formula has real numbers in it**, a calculator checks them — actual
    Python, not a model doing mental math (which is where they slip).
 
-At the end you get a tidy report: who confirmed, who objected and why, and the
-calculator's verdict. **You** make the final call. The paper is only ever *read*,
-never changed.
+At the end you get **two things**:
+
+* a **human review** — plain language, in the paper's own order, that says *"the
+  formula at* *`main.tex:1586`* *is off by a factor of 1000, here's why"* — no model
+  jargon, no internal IDs;
+* and the **raw report** behind it: who confirmed, who objected and why, and the
+  calculator's verdict, formula by formula — for when you want to dig in.
+
+**You** make the final call. The paper is only ever *read*, never changed.
 
 ***
 
@@ -142,7 +149,8 @@ flowchart TD
     NUM -- "No" --> REP
     PY --> REP
 
-    REP["📝 <b>claim-report.md</b><br/>• “N/M models confirm” headline<br/>• per-round verdict tables<br/>• Python row (if numeric)<br/>• a synthesis line you fill in"]
+    REP["📝 <b>Raw report</b> (all claims)<br/>• “N/M models confirm” headline<br/>• per-round verdict tables<br/>• Python row (if numeric)"]
+    REP --> SYN["🧑‍💼 <b>Human review</b> (the deliverable)<br/>One model reads every verdict + the<br/>line-numbered paper, then writes plain<br/>language in paper order:<br/>🔴 wrong · 🟡 result OK, derivation off · 🟢 confirmed<br/>each cited as <code>main.tex:&lt;line&gt;</code>."]
 
     style A fill:#e8f0fe,stroke:#4285f4
     style R1 fill:#ffffff,stroke:#888888
@@ -150,6 +158,7 @@ flowchart TD
     style R3 fill:#fef7e0,stroke:#f9ab00
     style PY fill:#e6f4ea,stroke:#34a853
     style REP fill:#f3e8fd,stroke:#a142f4
+    style SYN fill:#fce8e6,stroke:#ea4335
     style Q fill:#ffffff,stroke:#444444
     style NUM fill:#ffffff,stroke:#444444
 ```
@@ -160,8 +169,23 @@ flowchart TD
 panel is genuinely split: at least one CONFIRMED *and* at least one objection.
 
 `run_batch.sh` runs many claims at once (up to `MAX_PARALLEL`, 5 models each),
-then stitches every `claim-report.md` into **one** report with a summary table on
-top. A claim that errors out is marked `FAILED` and never aborts the rest.
+then stitches every per-claim fragment into **one** raw report with a summary
+table on top. A claim that errors out is marked `FAILED` and never aborts the rest.
+
+### The human review (final step)
+
+The raw report is exhaustive but model-flavoured. So `run_batch.sh` then runs one
+more pass — `scripts/synthesize_report.sh` — that hands the whole raw report plus
+the **line-numbered paper** to a single model and asks for a review written *for a
+human*: paper order, plain language, no internal claim IDs, every finding cited as
+`main.tex:<line>`, bucketed into 🔴 wrong / 🟡 result OK but derivation flawed /
+🟢 confirmed. You get **two files**: `…-<paper>.md` (raw) and `…-<paper>-review.md`
+(the human review — the thing you actually read).
+
+It needs to know which `.tex` is the paper. It doesn't guess late: at decomposition
+time Claude records the path in `<claims-dir>/.paper_path`, and `run_batch.sh` reads
+that first. Failing that it auto-detects (`PAPER_TEX` override → `.paper_path` →
+`main.tex` in the working roots → a single/clearly-largest `.tex`).
 
 ### Why three rounds + Python?
 
@@ -187,16 +211,18 @@ verify-paper-formulas/
 ├── SKILL.md              # the skill definition + workflow Claude follows
 ├── README.md             # this file
 ├── scripts/
-│   ├── run_batch.sh      # run a directory of claims → one assembled report
-│   ├── run_claim.sh      # one claim: Round 1 → 2 → (3) → report fragment
-│   ├── fan_out.sh        # run a prompt across all models in parallel → JSONL
-│   ├── or_query.sh       # one OpenRouter call → JSON {ok, model, content|error}
-│   └── run_python.sh     # sandboxed executor for numeric ground-truth snippets
+│   ├── run_batch.sh         # run a directory of claims → raw report + human review
+│   ├── run_claim.sh         # one claim: Round 1 → 2 → (3) → report fragment
+│   ├── fan_out.sh           # run a prompt across all models in parallel → JSONL
+│   ├── or_query.sh          # one OpenRouter call → JSON {ok, model, content|error}
+│   ├── synthesize_report.sh # raw report + line-numbered .tex → human review
+│   └── run_python.sh        # sandboxed executor for numeric ground-truth snippets
 └── prompts/
     ├── derive.md         # Round 1: independent derivation
     ├── refute.md         # Round 2: adversarial refutation
     ├── resolve.md        # Round 3: resolve a disagreement
-    └── numeric.md        # numeric ground-truth: write a Python snippet
+    ├── numeric.md        # numeric ground-truth: write a Python snippet
+    └── synthesize.md     # final pass: write the human-readable review
 ```
 
 Default model panel (real cross-vendor diversity):
@@ -226,7 +252,13 @@ All optional — defaults keep it fast and cheap.
 | `OR_DIGEST_CHARS`    | `4000`            | Max chars of each Round-1 derivation carried into Round 2.                                                                          |
 | `OR_MAX_TOKENS`      | `8192`            | Per-call completion cap.                                                                                                            |
 | `OR_TEMP`            | `0.2`             | Sampling temperature (auto-raised to 0.5 during `N_SAMPLES` runs).                                                                  |
+| `OR_TIMEOUT`         | `240`             | Per-call wall-clock cap (seconds).                                                                                                  |
+| `OR_RETRY_TIMEOUT`   | `OR_TIMEOUT/2`    | Shorter cap for the empty-content retry, so a stalled reasoning model doesn't burn a second full timeout.                           |
+| `VPF_MODELS`         | *(unset)*         | Comma/space-separated model set overriding the 5-model default without editing `fan_out.sh`. Drop a slow/empty model for one run.   |
 | `GROUND_TRUTH_MODEL` | `claude-opus-4.8` | Model that writes the numeric-check Python snippet.                                                                                 |
+| `PAPER_TEX`          | *(auto-detected)* | Path to the paper `.tex` for the human-review step. Normally found on its own (`.paper_path` → `main.tex` → largest `.tex`).        |
+| `SYNTH_MODEL`        | `claude-opus-4.8` | Model that writes the final human-readable review.                                                                                  |
+| `SYNTH_MAX_TOKENS`   | `16384`           | Completion cap for the synthesis pass (the review is long).                                                                         |
 
 > **Cost note:** `MAX_PARALLEL` and `N_SAMPLES` multiply. `MAX_PARALLEL=5
 > N_SAMPLES=3` ≈ 75 concurrent calls. If you push both, drop `MAX_PARALLEL` to 2.
