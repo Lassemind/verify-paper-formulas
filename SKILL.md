@@ -112,9 +112,16 @@ the one thing the script can't decide for you — the **synthesis line**:
 
 ## Scripts
 
-* `scripts/run_claim.sh <claim-file> [out-dir]` — **the driver**: both rounds for
-  one claim + a `claim-report.md`. Honours `CLAIM_ID` / `CLAIM_TITLE` env vars for
-  the heading and an optional `=== NUMBERS ===` section for numeric checks.
+* `scripts/run_batch.sh <claims-dir> [out-dir] [report-file]` — runs a whole
+  **directory** of claim files through `run_claim.sh` (sorted by filename,
+  claims sequential, 5 models parallel each) and assembles **one** report with a
+  summary table. ID/title come from each filename (`B1_ideal_solenoid.txt` ->
+  ID `B1`, title "ideal solenoid"); a `# Title: ...` first line overrides. A
+  failing claim is marked `FAILED` and does not abort the batch. Use this so the
+  orchestration never has to be hand-written.
+* `scripts/run_claim.sh <claim-file> [out-dir]` — **single-claim driver**: both
+  rounds for one claim + a `claim-report.md`. Honours `CLAIM_ID` / `CLAIM_TITLE`
+  env vars for the heading and an optional `=== NUMBERS ===` section for numeric checks.
 * `scripts/or_query.sh <model> <prompt-file>` — one OpenRouter call → JSON
   `{ok, requested, model, content|error}`. `OR_MAX_TOKENS` overrides the 8192 cap;
   retries once on empty content.
