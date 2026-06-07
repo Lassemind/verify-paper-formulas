@@ -260,8 +260,42 @@ All optional — defaults keep it fast and cheap.
 | `SYNTH_MODEL`        | `claude-opus-4.8` | Model that writes the final human-readable review.                                                                                  |
 | `SYNTH_MAX_TOKENS`   | `16384`           | Completion cap for the synthesis pass (the review is long).                                                                         |
 
-> **Cost note:** `MAX_PARALLEL` and `N_SAMPLES` multiply. `MAX_PARALLEL=5
-> N_SAMPLES=3` ≈ 75 concurrent calls. If you push both, drop `MAX_PARALLEL` to 2.
+> **Note:** `MAX_PARALLEL` and `N_SAMPLES` multiply the *concurrency*.
+> `MAX_PARALLEL=5 N_SAMPLES=3` ≈ 75 in-flight calls. If you push both, drop
+> `MAX_PARALLEL` to 2 to stay under provider rate limits.
+
+### Cost
+
+A run is just a pile of OpenRouter calls, so the bill scales with **claims ×
+calls-per-claim × the panel's price**. Per claim, with the default 5-model panel:
+
+| Step              | Calls                                           |
+| ----------------- | ----------------------------------------------- |
+| Round 1 (derive)  | 5 (× `N_SAMPLES`)                               |
+| Round 2 (refute)  | 5                                               |
+| Round 3 (resolve) | 5 — *only on a genuine split*                   |
+| Numeric (Python)  | 1 — *only if the claim has* *`=== NUMBERS ===`* |
+| **per claim**     | **\~10–16**                                     |
+
+…plus **one** synthesis call per run for the human review.
+
+The panel's price is lopsided — Opus 4.8 and GPT-5.5 are \~30× the cost of
+DeepSeek, so they dominate the bill. One full fan-out (all 5 models, \~4k in /
+\~2.5k out each) runs about **\$0.23**:
+
+| Model             | in \$/M · out \$/M | ≈ \$/call |
+| ----------------- | ------------------ | --------- |
+| `claude-opus-4.8` | 5 · 25             | 0.083     |
+| `gpt-5.5`         | 5 · 30             | 0.095     |
+| `gemini-3.1-pro`  | 2 · 12             | 0.038     |
+| `grok-4.3`        | 1.25 · 2.5         | 0.011     |
+| `deepseek-v4-pro` | 0.44 · 0.87        | 0.004     |
+
+**Rule of thumb: \~\$0.50–0.70 per claim** at defaults, **\~\$1.20 per claim** with
+`N_SAMPLES=3`. A \~17-claim paper lands around **\$8–10** (default) or **\$18–22**
+(`N_SAMPLES=3`). Dropping the two priciest models (`VPF_MODELS="google/gemini-3.1-pro-preview,x-ai/grok-4.3,deepseek/deepseek-v4-pro"`)
+cuts a default run to **\~\$2–3** — at the cost of less vendor diversity in the
+panel. (Prices are OpenRouter list rates and drift; treat these as ballpark.)
 
 ***
 
